@@ -117,6 +117,8 @@ same probe machinery.
 
 8. **PDB tightness during Phase 1/3/5**: confirm `clusterSpec.statefulset.podDisruptionBudget.maxUnavailable: 1` and that replicas ≥ 3 with replication-factor ≥ 3 on production topics; otherwise rolling restarts can take a partition offline briefly. (Validation saw clean rolling restarts on a 3-broker cluster with `replication.factor=3` and `min.insync.replicas=2`.)
 
+9. **🚨 `syncOptions: ServerSideApply=true` is required on every ArgoCD `Application` for the upgrade.** The chart-5.10 → chart-25.3 jump in Phase 2 swaps the broker `livenessProbe` handler from `exec` (curl-based) to `tcpSocket`. Client-side strategic merge (`kubectl apply` / `helm upgrade` without `--force`) keeps both handlers, and K8s rejects the resulting pod spec (*"may not specify more than 1 handler type"*) — leaving Phase 3 unable to recreate `redpanda-0`. Validated in Run 4 (see [`VALIDATION-RESULTS.md`](VALIDATION-RESULTS.md)). Server-side apply tracks per-field ownership and replaces the field cleanly, so this is a non-issue under ArgoCD as configured ([`applications/`](applications/) already specifies `ServerSideApply=true`). If anyone reproduces the upgrade with `helm upgrade` directly outside of ArgoCD, pass `--force` for the chart bumps that span major chart versions.
+
 ---
 
 ## Pre-flight (Phase −1)
