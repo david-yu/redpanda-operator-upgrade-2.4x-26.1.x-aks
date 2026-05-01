@@ -97,7 +97,6 @@ same probe machinery.
 | Phase 1: HTTP Proxy auth breaking change? | **Skip the workaround — customer is not running HTTP Proxy.** Confirmed `pandaproxy.enabled: false` in the customer's values. The breaking change is irrelevant. |
 | Phase 3: Iceberg schema + topic retention? | **Skip — customer has no Iceberg topics.** No action. |
 | Phase 5: K8s ≥ 1.32? | **AKS upgrade required first** if the cluster is on `<1.32`. AKS supports 1.32 GA across all regions. Document the AKS upgrade as Phase −1 (pre-flight) below. |
-| Phase 5: FIPS SCRAM ≥ 14 chars? | **Skip — FIPS not enabled.** No action. |
 
 ### Deltas I'd recommend on top of the customer's plan
 
