@@ -94,8 +94,6 @@ same probe machinery.
 | - | - |
 | Phase 0b: Helm Chart `5.10.x → 25.1.x` (reconciled by Operator)? | **Yes.** With `spec.chartRef.useFlux: false`, the operator drives the chart upgrade in-process via `lifecycle.SyncAll`. With `useFlux: true`, the in-cluster Flux HelmRelease reconciles. Phase 0a should leave `useFlux` whatever it is today; phase 0b is where you'd flip to fluxless if desired (recommended — Flux dependency removed in operator 25.x+ for v2 controllers). |
 | Phase 0b: Console v2 → v3 side effect — review migration guide first? | **Yes, but the chart-driven side-effect doesn't work.** Validated empirically (Run 1, Run 2, Run 3): the operator can't roll Console v2 → v3 in place when the chart bumps. The supported path is a **blue/green cutover in Phase 0b** (deploy standalone Console v3, flip an active Service, disable the chart's bundled Console) followed by **Phase 2b** (adopt the new `Console` CRD once the operator is on 25.2+). See [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md) for the manifests + cutover timing, and [`docs/console-v2-to-v3.md`](docs/console-v2-to-v3.md) for the v3 config schema. |
-| Phase 1: HTTP Proxy auth breaking change? | **Skip the workaround — customer is not running HTTP Proxy.** Confirmed `pandaproxy.enabled: false` in the customer's values. The breaking change is irrelevant. |
-| Phase 3: Iceberg schema + topic retention? | **Skip — customer has no Iceberg topics.** No action. |
 | Phase 5: K8s ≥ 1.32? | **AKS upgrade required first** if the cluster is on `<1.32`. AKS supports 1.32 GA across all regions. Document the AKS upgrade as Phase −1 (pre-flight) below. |
 
 ### Deltas I'd recommend on top of the customer's plan
