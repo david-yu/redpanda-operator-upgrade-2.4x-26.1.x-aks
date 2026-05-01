@@ -64,15 +64,21 @@ The customer's plan is reproduced below with **inline notes** (`📌 NOTE`,
 
 ### Upgrade phases
 
-| Phase | What changes | Broker restart? | OMB downtime expected |
+| Phase | What changes | Broker restart? | Validated downtime (Run 3) |
 | ----- | ------------ | :-------------: | :-------------------: |
-| 0a    | Operator binary + chart `v2.4.x → 25.1.x`, CRDs reapplied | no | none |
-| 0b    | Redpanda chart `5.10.x → 25.1.x` (Console v2→v3 side-effect) | StatefulSet rolling pod restart only if pod-spec drift | within `pdb.maxUnavailable` window |
-| 1     | Redpanda broker `25.1.9 → 25.2.x`, chart `25.1.x → 25.2.x` | yes (rolling) | within `pdb.maxUnavailable` window |
-| 2     | Operator binary + chart `25.1.x → 25.3.x` | no | none |
-| 3     | Redpanda broker `25.2.x → 25.3.x`, chart `25.2.x → 25.3.x` | yes (rolling) | within `pdb.maxUnavailable` window |
-| 4     | Operator binary + chart `25.3.x → 26.1.x` | no | none |
-| 5     | Redpanda broker `25.3.x → 26.1.x`, chart `25.3.x → 26.1.x` | yes (rolling) | within `pdb.maxUnavailable` window |
+| 0a    | Operator binary + chart `v2.4.x → 25.1.x`, CRDs reapplied | no | 0 errors |
+| 0b    | (a) drop `chartRef.chartVersion` from CR (operator embeds chart now), (b) **Console v2 → v3 blue/green cutover** (deploy v3 standalone, flip active Service, then `console.enabled: false`), (c) `useFlux: false`. Triggers an incidental broker rolling restart from chart 5.10 → 25.1 pod-spec drift. | yes (incidental) | 0 errors (cutover ~2 s) |
+| 1     | Redpanda broker `25.1.9 → 25.2.x` (chart bump is implicit — operator pins it via embedded chart, see [Delta #1](#deltas-id-recommend-on-top-of-the-customers-plan)) | yes (rolling) | 0 errors |
+| 2     | Operator binary + chart `25.1.x → 25.3.x` (skips 25.2 — both 25.1 and 25.3 manage 25.2 brokers) | no | 0 errors |
+| 3     | Redpanda broker `25.2.x → 25.3.x` (chart bump implicit) | yes (rolling) | 0 errors |
+| 4     | Operator binary + chart `25.3.x → 26.1.x` | no | 0 errors |
+| 5     | Redpanda broker `25.3.x → 26.1.x` (chart bump implicit). AKS K8s ≥ 1.32 required. | yes (rolling) | 0 errors |
+
+**Total validated upgrade window** (Run 3, 3-broker AKS cluster on
+Standard_D4s_v3): ~20 minutes wall clock for source state → terminal
+state, with `kafka-probe` recording **158,000 produces / 0 errors** and
+`console-probe` recording **4,700 HTTP 200 / 0 failures** across the
+entire run.
 
 ### Customer's open questions
 
@@ -189,48 +195,113 @@ spec:
   versions (controller-gen embeds version in the CRD's `annotations`).
 - OMB throughput unaffected.
 
-### Phase 0b — Redpanda chart 5.10.x → 25.1.x (Console v2 → v3)
+### Phase 0b — chart 5.10 → embedded 25.1 + Console **blue/green** cutover
+
+**This phase is the most complex of the upgrade.** Three changes land in
+one git commit:
+
+1. **Drop `spec.chartRef.chartVersion`** from the Redpanda CR. Operator
+   25.1+ rejects an explicit `chartVersion`; the operator binary now
+   embeds its own chart and pins the version to its own release.
+2. **Cut over the Console "active" Service from v2 (operator-managed) to
+   v3 (standalone)** — see the blue/green steps below.
+3. **Set `spec.clusterSpec.console.enabled: false`** so the operator GCs
+   the now-orphaned v2 Console Deployment.
 
 **ArgoCD change:** [`applications/phase-0b-redpanda-cluster.yaml`](applications/phase-0b-redpanda-cluster.yaml)
 
+#### High-level: Console v2 → v3 blue/green
+
+The operator **cannot** roll Console v2 → v3 in place — verified
+across four sub-tests (drop the explicit image pin, delete the
+Deployment to force re-render, bump a reconcile annotation, etc. — full
+matrix in [`VALIDATION-RESULTS.md`](VALIDATION-RESULTS.md)). The chart's
+default Console image is correct (v3.7.x) but the operator's reconcile
+keeps re-applying v2.8.0 from a cached Helm release values block. The
+working pattern is a **blue/green** swap: stand up Console v3 alongside
+the operator-managed v2, flip an "active" Service that the
+ingress / clients point at, then disable the operator's Console.
+
+```
+   ┌──────────────────────────────────────────────────────────────┐
+   │  before:  ingress / app clients ──►  redpanda-console-active │
+   │                                          (selector → v2)     │
+   │                                                               │
+   │  step 1:  deploy parallel Console v3 + its own Service        │
+   │           ──►  operator-managed Console v2  [active]          │
+   │           ──►  standalone Console v3        [warm, idle]      │
+   │                                                               │
+   │  step 2:  kubectl apply the active Service spec wholesale     │
+   │           — selector switches to {console-version: v3}        │
+   │           ──►  operator-managed Console v2  [idle]            │
+   │           ──►  standalone Console v3        [active]          │
+   │                                                               │
+   │  step 3:  CR.console.enabled=false                            │
+   │           operator GCs the v2 Deployment + Service + CM       │
+   │           ──►  standalone Console v3        [active, sole]    │
+   └──────────────────────────────────────────────────────────────┘
+```
+
+**Steps in this phase's git commit (all land together in one push):**
+
+1. **Add v3 manifests** — a standalone `Deployment` + `ConfigMap` +
+   `Service` for Console v3. See
+   [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
+   for the validated YAML; the only customisation needed is the v3
+   `config.yaml` (kafka brokers, schema registry, admin API URLs).
+2. **Add the `redpanda-console-active` Service** with selector
+   `{ console-version: v3 }` — this is what ingress / app clients use as
+   the Console hostname target. The selector replaces wholesale (no
+   `kubectl patch --type=merge`).
+3. **Update the Redpanda CR** to (a) drop `chartRef.chartVersion`, (b)
+   keep `useFlux: false`, (c) set `console.enabled: false`.
+
+The Service-selector flip propagates in **~2 s** (Endpoint slice
+reconcile). HTTP requests in flight at the moment of the flip complete
+against the v2 backend; new requests route to v3. Validated in
+[Run 3](VALIDATION-RESULTS.md#run-3--full-upgrade-with-console-bluegreen):
+**4,700 HTTP probes / 0 failures** across the entire upgrade window
+including the cutover.
+
 ```yaml
+# Redpanda CR diff for Phase 0b
 spec:
   chartRef:
     chartName: redpanda
-    chartVersion: 25.1.4                 # was 5.10.x
+    # chartVersion: 25.1.4   ← REMOVED — operator embeds chart now
     helmRepositoryName: redpanda-repository
-    useFlux: false                       # MIGRATE off Flux during this phase
+    useFlux: false           # MIGRATE off Flux during this phase
   clusterSpec:
     image:
-      tag: v25.1.9                       # NO broker version bump in this phase
+      tag: v25.1.9           # NO broker version bump in this phase
     console:
-      enabled: true
-      # Console v3 schema lives at console.config (was console.console.config in v2).
-      # See docs/console-v2-to-v3.md for the full diff.
-      config:
-        kafka: { brokers: ['rp-0.rp.redpanda.svc.cluster.local:9093', ...] }
+      enabled: false         # operator GCs v2 Console — v3 standalone takes over
 ```
 
 **Notes:**
-- The `chartRef.chartVersion` jump from `5.10.x` to `25.1.x` is the chart
-  **rename**, not a versioned upgrade — Redpanda chart `5.10.x` and
-  `25.1.x` share lineage but the major-version reset switched the
-  versioning scheme. Internally most templates are compatible.
-- Console v2 → v3 happens automatically because the chart's `console`
-  subchart pin is `>=3.7.0-0`. Most config fields move from
-  `console.console.config.*` to `console.config.*`. The chart 25.1.4
-  release notes call this out; see [`docs/console-v2-to-v3.md`](docs/console-v2-to-v3.md)
-  for a transcribed migration table.
-- ArgoCD will see drift on the Console Deployment (image tag v2.x → v3.x).
-  Auto-sync handles it.
+- The `chartRef.chartVersion` removal is mandatory in operator 25.1+;
+  see Delta #1 under [Plan review](#deltas-id-recommend-on-top-of-the-customers-plan).
+- Even though `console.enabled` is set to `false`, the actual Console UI
+  stays available — traffic flows through the standalone v3 Deployment
+  via the active Service. Validated in Run 3.
+- The chart-shape change (5.10 → 25.1) triggers an **incidental rolling
+  broker restart** as the operator re-renders the StatefulSet pod spec.
+  In Run 3 this was clean — `kafka-probe` showed 0 errors across the
+  ordinal-by-ordinal restart with `pdb.maxUnavailable: 1` and
+  `replication.factor: 3`.
 
 **Exit criteria:**
-- All Redpanda broker pods stay `Ready` throughout (rolling pod-spec drift
-  if any).
-- Console pod transitions to image `v3.7.x`, comes Ready, `/admin/health`
-  returns 200.
-- Old `HelmRelease`/`HelmRepository` CRs (from Flux) are GC'd.
-- OMB throughput unaffected (any partition unavailability < `pdb` window).
+- `kubectl get pods -l app.kubernetes.io/name=console -n redpanda` →
+  only `redpanda-console-v3-…` Running. The operator-managed
+  `redpanda-console-…` pod is gone.
+- `kubectl get svc redpanda-console-active -n redpanda \
+   -o jsonpath='{.spec.selector}'` → `{ console-version: v3 }`.
+- Console UI smoke test through the ingress / active Service returns
+  200 on `/admin/health` and renders the v3 SPA on `/`.
+- All Redpanda broker pods Ready, `rpk cluster health` Healthy=True.
+- Old `HelmRelease`/`HelmRepository` CRs (from Flux) GC'd by the operator.
+- Continuous probes (Kafka producer + HTTP) show zero failures across
+  the cutover window.
 
 ### Phase 1 — Redpanda broker 25.1.9 → 25.2.x
 
@@ -285,6 +356,90 @@ multicluster CRDs your topology uses.
 
 **Final rolling restart.** AKS K8s version must be `>=1.32` before
 applying this phase (verified in Phase −1 pre-flight).
+
+### Phase 6 (optional) — bring Console v3 back under operator management via the v2 `Console` CRD
+
+After Phase 5 finishes, the customer is fully on operator 26.1.x and
+broker v26.1.6, but **Console is still the standalone Deployment**
+deployed in Phase 0b's blue/green cutover. That's a perfectly valid
+end-state — Console is stateless, its config lives in a ConfigMap that
+ArgoCD owns, and there's no cluster-functional reason to put it back
+under the operator.
+
+If the customer prefers operator-managed Console for the long term —
+unified declarative config, automatic chart upgrades on each operator
+bump, status visibility via `kubectl get console` — operator 26.1+ ships
+a separate **`Console` CRD** (`cluster.redpanda.com/v1alpha2`,
+`stableCRDs` in the chart's pre-install Job) and a `ConsoleReconciler`
+that's enabled by default (`--enable-console=true`). A `Console` CR is
+the operator-native way to express the same v3 deployment.
+
+**The flip is itself a blue/green cutover** — same pattern as Phase 0b,
+just in reverse:
+
+```
+   ┌──────────────────────────────────────────────────────────────┐
+   │  before:  ingress ──►  redpanda-console-active                │
+   │                          (selector → standalone v3)           │
+   │                                                                │
+   │  step 1:  apply a Console CR alongside the standalone v3      │
+   │           operator creates redpanda-console-managed v3        │
+   │           pod with its own Service                            │
+   │                                                                │
+   │  step 2:  flip redpanda-console-active selector wholesale     │
+   │           ──►  operator-managed Console v3  [active]          │
+   │           ──►  standalone Console v3        [idle]            │
+   │                                                                │
+   │  step 3:  delete the standalone Deployment + Service + CM     │
+   │           ──►  operator-managed Console v3  [active, sole]    │
+   └──────────────────────────────────────────────────────────────┘
+```
+
+**Console CR template** (drop into `manifests/` on the customer's
+ArgoCD-watched branch):
+
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Console
+metadata:
+  name: redpanda-console
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda                       # the Redpanda CR's name
+  # Inline ConsoleValues — same shape as the chart's `console:` values block.
+  # Only override what diverges from the chart defaults.
+  replicaCount: 1
+  podLabels:
+    console-version: managed-v3            # so the active Service can target it
+  service:
+    type: ClusterIP
+    targetPort: 8080
+```
+
+The operator's Console controller renders this into a Deployment +
+ConfigMap + Service named `redpanda-console`. After it's Ready, swap the
+active Service selector wholesale (`kubectl apply`, **not**
+`--type=merge`) from `console-version: v3` to
+`console-version: managed-v3`, then delete the standalone manifests.
+Validated probe behavior in
+[`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
+applies identically here — the Service-selector flip is ~2 s, no
+dropped requests when both backends are Ready.
+
+**Notes:**
+- The `Console` CRD is **not** required to use Console — many customers
+  stay on the standalone Deployment indefinitely. Run 3 left it that
+  way and that's a fully supported terminal state.
+- If the customer takes this step, they should also remove the
+  standalone v3 manifests from git in the same commit so ArgoCD prunes
+  them rather than fighting the operator over Deployment ownership.
+- The Console CR's `spec.cluster.clusterRef.name` is the simplest way to
+  point Console at the cluster — the operator resolves brokers, schema
+  registry, and admin API URLs from the Redpanda CR's own status. For
+  per-listener overrides see the `staticConfiguration` mode in
+  `ClusterSource`.
 
 ---
 

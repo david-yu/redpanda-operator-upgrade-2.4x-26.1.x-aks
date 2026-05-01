@@ -1,17 +1,38 @@
-# Phase 0b — Redpanda chart 5.10.x → 25.1.x (Console v2 → v3, useFlux flip)
+# Phase 0b — chart 5.10.x → embedded 25.1.x + Console v2 → v3 blue/green
 #
-# Three things change on the Redpanda CR in this commit:
+# This commit lands FOUR changes together (validated end-to-end in
+# VALIDATION-RESULTS.md "Run 3" — zero downtime measured):
 #
-# 1. spec.chartRef.chartVersion: 5.10.x → 25.1.x  (chart name unchanged)
-# 2. spec.chartRef.useFlux: true → false          (MANDATORY before Phase 2 —
-#                                                  operator 25.2.x silently
-#                                                  drops CRs with useFlux:true.
-#                                                  See ../docs/flux-removal.md)
-# 3. spec.clusterSpec.console.config.*            (Console v2 → v3 schema
-#                                                  flatten — see
-#                                                  ../docs/console-v2-to-v3.md)
+# 1. Redpanda CR (manifests/redpanda-cluster.yaml):
+#       - spec.chartRef.chartVersion REMOVED (operator 25.1+ rejects it;
+#         operator now embeds the chart). See README "Delta #1".
+#       - spec.chartRef.useFlux: true → false (mandatory before Phase 2;
+#         operator 25.2.x silently drops CRs with useFlux:true. See
+#         docs/flux-removal.md)
+#       - spec.clusterSpec.console.enabled: true → false (operator GCs
+#         the v2 Console — the v3 standalone Deployment below takes
+#         over). UI stays available throughout because the active
+#         Service flips to v3 at the same time.
 #
-# No broker version bump in this phase.
+# 2. Console v3 standalone manifests (manifests/console-v3/):
+#       - Deployment + ConfigMap + Service running v3.7.0 with the
+#         flat v3 config schema. NOT operator-managed.
+#       - Stays in place after Phase 0b for the rest of the upgrade.
+#
+# 3. The "active" Service (manifests/console-v3/active-service.yaml):
+#       - Selector replaced WHOLESALE (kubectl apply, NOT --type=merge)
+#         from {app.kubernetes.io/instance: redpanda,
+#               app.kubernetes.io/name: console}
+#       - to        {console-version: v3}
+#       - Endpoint slice flips in ~2 s; HTTP probes saw 0 failures
+#         across the cutover window in Run 3.
+#       - This is the Service that the customer's ingress / app
+#         clients reference as the Console hostname target.
+#
+# Side effect: the chart-shape change (5.10 → embedded 25.1) triggers
+# an incidental rolling broker restart as the operator re-renders the
+# StatefulSet pod spec. With pdb.maxUnavailable=1 + RF≥3, that's
+# clean (kafka-probe = 0 errors in Run 3).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -28,9 +49,11 @@ spec:
     repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
     targetRevision: main
     path: manifests
+    # Apply the Redpanda CR + the v3 standalone manifests in one sync.
+    # Drop the `directory.include` filter so the Application picks up
+    # both manifests/redpanda-cluster.yaml AND manifests/console-v3/*.yaml.
     directory:
-      include: 'redpanda-cluster.yaml'   # only the Redpanda CR — keeps
-                                          # the Application narrow.
+      recurse: true
   syncPolicy:
     automated:
       prune: false

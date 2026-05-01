@@ -198,6 +198,105 @@ in a follow-up commit. ArgoCD will create the new resources and prune the
 `-v3` ones. The active Service selector flips one more time (4 → final).
 This is cosmetic; you can also keep `-v3` indefinitely.
 
+### Step 5. (Optional, requires operator 26.1+) Bring Console back under operator management
+
+The blue/green cutover deliberately moves Console **out** of operator
+management for the upgrade window. After Phase 5 (operator on 26.1.x),
+the customer can opt back in by applying a **`Console` CRD** — the
+operator-native way to declare a Console instance separately from the
+Redpanda CR. This is a separate top-level resource
+(`cluster.redpanda.com/v1alpha2`, `kind: Console`), in the `stableCRDs`
+list installed by the chart's pre-install Job whenever
+`crds.enabled: true`. The `ConsoleReconciler` is on by default
+(operator flag `--enable-console=true`).
+
+**Why this is itself a blue/green:** the Console CR's reconciler creates
+its own Deployment (named `redpanda-console`). It does **not** adopt the
+existing standalone Deployment. So the same wholesale-replace
+Service-selector pattern applies — flip the active Service from the
+standalone v3 to the operator-managed v3, then delete the standalone
+manifests.
+
+```yaml
+# manifests/console-cr.yaml — drop into git, ArgoCD applies it
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Console
+metadata:
+  name: redpanda-console
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda                       # Redpanda CR's name
+  replicaCount: 1
+  podLabels:
+    console-version: managed-v3            # used by the active Service
+  service:
+    type: ClusterIP
+    targetPort: 8080
+  # ConsoleValues is "PartialValues" of the upstream console chart, so
+  # any field not set falls through to the chart's defaults. The most
+  # commonly customised piece is config (the equivalent of console.yaml).
+  # See operator/api/redpanda/v1alpha2/console_types.go for the full schema.
+  config:
+    kafka:
+      brokers:
+        - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
+    schemaRegistry:
+      enabled: true
+      urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081]
+    redpanda:
+      adminApi:
+        enabled: true
+        urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:9644]
+```
+
+**Cutover steps** (same probe-protected wholesale-replace as Step 2):
+
+```bash
+# 1. Apply the Console CR; wait for the operator-managed pod to be Ready.
+kubectl apply -f manifests/console-cr.yaml
+kubectl -n redpanda wait --for=condition=Ready --timeout=2m \
+  pod -l console-version=managed-v3
+
+# 2. Flip the active Service selector — wholesale apply, NOT merge.
+kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-console-active
+  namespace: redpanda
+  annotations: { upgrade.redpanda.com/active: managed-v3 }
+spec:
+  type: ClusterIP
+  selector: { console-version: managed-v3 }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+YAML
+
+# 3. Verify probe is clean, then delete the standalone v3 manifests.
+kubectl delete deploy redpanda-console-v3 svc redpanda-console-v3 cm redpanda-console-v3
+```
+
+**Operator-managed advantages once flipped:**
+- Console version follows the operator chart's appVersion automatically
+  on each operator bump (no manual image pin).
+- `kubectl get console redpanda-console` shows reconcile status,
+  observedGeneration, and replica counts directly.
+- Single ArgoCD Application for the Redpanda CR + Console CR; no
+  separate "standalone Console" tree to maintain.
+
+**Risks / when not to do this:**
+- Phase 5 just exited. Adding another rolling-deploy step in the same
+  change window adds noise. Many teams keep the standalone deployment
+  for at least a soak period.
+- The Console CR's schema is `ConsoleValues` (PartialValues), not the
+  raw chart values block. Some less-common knobs may not be expressible
+  yet — check `operator/api/redpanda/v1alpha2/console_types.go` for the
+  full struct before relying on a specific field. A workaround is to
+  stay on the standalone Deployment until the field is added.
+
 ## What this pattern relies on
 
 - **Both deployments share the upstream Redpanda cluster.** Console is
