@@ -1,0 +1,48 @@
+# Phase 2 — Operator binary + chart 25.1.x → 25.3.x  (skipping 25.2.x)
+#
+# Both 25.1 and 25.3 operators support clusters running 25.2 brokers,
+# which is why this phase skip is safe. No broker restart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda-operator
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda-operator
+  source:
+    repoURL: https://charts.redpanda.com
+    chart: operator
+    targetRevision: 25.3.4
+    helm:
+      releaseName: redpanda-operator
+      valueFiles:
+        - $values/values/operator-25.3.yaml
+  sources:
+    - repoURL: https://charts.redpanda.com
+      chart: operator
+      targetRevision: 25.3.4
+      helm:
+        releaseName: redpanda-operator
+        valueFiles:
+          - $values/values/operator-25.3.yaml
+    - repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      - PruneLast=true
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /metadata/annotations

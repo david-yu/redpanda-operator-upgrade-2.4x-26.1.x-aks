@@ -1,0 +1,35 @@
+# Phase 5 — Redpanda broker 25.3.x → 26.1.x  (chart 25.3.x → 26.1.x)
+#
+# REQUIREMENT: AKS K8s version >= 1.32 (verified in Phase −1 pre-flight).
+# This is the final rolling broker restart of the upgrade.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda
+  source:
+    repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
+    targetRevision: phase-5
+    path: manifests
+    directory:
+      include: 'redpanda-cluster.yaml'
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: cluster.redpanda.com
+      kind: Redpanda
+      jsonPointers:
+        - /status
+        - /spec/clusterSpec/statefulset/replicas

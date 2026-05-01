@@ -1,0 +1,46 @@
+# OpenMessaging Benchmark driver config — Redpanda over the Kafka API.
+# OMB's stock Kafka driver works against Redpanda unchanged; we just
+# point bootstrap at the AKS LoadBalancer Service for the kafka listener.
+name: Redpanda
+driverClass: io.openmessaging.benchmark.driver.kafka.KafkaBenchmarkDriver
+
+replicationFactor: 3
+
+topicConfig: |
+  min.insync.replicas=2
+
+# IMPORTANT: replace the bootstrap.servers value with your cluster's
+# external Kafka endpoint. Two common forms:
+#
+#   1) AKS Service type=LoadBalancer (public)
+#        rp.<external-dns>.example.com:9092
+#
+#   2) Internal LB (preferred — VM is in the same VNet)
+#        <internal-lb-ip>:9092
+#
+# Confirm with:
+#   kubectl -n redpanda get svc redpanda-external -o jsonpath='{.status.loadBalancer.ingress[*]}'
+commonConfig: |
+  bootstrap.servers=PLACE-YOUR-AKS-EXTERNAL-LB-HERE:9092
+  request.timeout.ms=30000
+  default.api.timeout.ms=60000
+  # SASL / TLS — the AKS Redpanda listener has SASL enabled.
+  security.protocol=SASL_SSL
+  sasl.mechanism=SCRAM-SHA-512
+  sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required \
+    username="omb-test" \
+    password="REPLACE-WITH-OMB-USER-SCRAM-PASSWORD";
+  ssl.truststore.location=/var/lib/omb/redpanda-ca-truststore.jks
+  ssl.truststore.password=changeit
+
+producerConfig: |
+  acks=all
+  enable.idempotence=true
+  linger.ms=5
+  max.in.flight.requests.per.connection=5
+  compression.type=lz4
+
+consumerConfig: |
+  auto.offset.reset=earliest
+  enable.auto.commit=false
+  isolation.level=read_committed

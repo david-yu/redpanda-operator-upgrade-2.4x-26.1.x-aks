@@ -1,0 +1,25 @@
+# Helm values for the operator chart at 26.1.x.
+# Same as 25.3.x for this customer — overlay kept distinct only so the
+# Phase 4 ArgoCD diff stays on one Application change (chart version +
+# values file pointer).
+crds:
+  enabled: true
+  experimental: false
+  multicluster: false
+
+image:
+  pullPolicy: IfNotPresent
+
+vectorizedControllers:
+  enabled: false
+
+monitoring:
+  enabled: true
+
+logLevel: info
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits:   { cpu: 1,    memory: 512Mi }
+
+additionalArgs: []

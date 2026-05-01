@@ -1,0 +1,24 @@
+# Helm values for the operator chart at 25.3.x.
+# Diff from 25.1.x: nothing functional for this customer; keep the
+# overlay file separate so each phase commit changes one thing.
+crds:
+  enabled: true
+  experimental: false
+  multicluster: false
+
+image:
+  pullPolicy: IfNotPresent
+
+vectorizedControllers:
+  enabled: false
+
+monitoring:
+  enabled: true
+
+logLevel: info
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits:   { cpu: 1,    memory: 512Mi }
+
+additionalArgs: []

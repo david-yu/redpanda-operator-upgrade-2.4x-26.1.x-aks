@@ -1,0 +1,56 @@
+# Phase 0b — Redpanda chart 5.10.x → 25.1.x (Console v2 → v3)
+#
+# This is the chart RENAME (5.10 → 25.1) without a broker version bump.
+# The Console v2 → v3 transition happens automatically via the chart's
+# console subchart pin (`>=3.7.0-0`). See ../docs/console-v2-to-v3.md for
+# the schema-migration table the customer needs to apply to their
+# console.config block before this commit lands.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda
+  source:
+    repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
+    targetRevision: main
+    path: manifests
+    directory:
+      include: 'redpanda-cluster.yaml'   # only the Redpanda CR — keeps
+                                          # the Application narrow.
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    # The operator owns most of the Redpanda CR's status, but ArgoCD's
+    # default behavior is to consider any field it didn't apply as drift.
+    - group: cluster.redpanda.com
+      kind: Redpanda
+      jsonPointers:
+        - /status
+        - /spec/clusterSpec/statefulset/replicas    # operator manages
+                                                    # rolling restarts
+                                                    # without bumping the
+                                                    # CR.
+    # During Phase 0b, the old Flux-managed HelmRelease/HelmRepository CRs
+    # get GC'd. ArgoCD's auto-sync will spam diffs while that settles —
+    # add the types to the ignore list for the duration of this phase
+    # only, then remove this block in Phase 1.
+    - group: helm.toolkit.fluxcd.io
+      kind: HelmRelease
+      jsonPointers:
+        - /status
+    - group: source.toolkit.fluxcd.io
+      kind: HelmRepository
+      jsonPointers:
+        - /status

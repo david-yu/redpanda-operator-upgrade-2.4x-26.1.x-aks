@@ -1,0 +1,100 @@
+# The Redpanda CR. Kept as ONE document across all phases — the only
+# fields that change between phases are:
+#
+#   spec.chartRef.chartVersion        chart version pin
+#   spec.clusterSpec.image.tag        Redpanda broker version
+#
+# Each phase commit edits ONLY those two fields. Everything else is
+# stable, which is what makes the ArgoCD diff small and reviewable.
+#
+# The starting values reflect Phase 0b (chart rename, broker stays on
+# 25.1.9). Update per phase as documented in the README's phase table.
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: redpanda
+spec:
+  chartRef:
+    chartName: redpanda
+    chartVersion: "25.1.4"             # Phase 0b: was 5.10.x
+    helmRepositoryName: redpanda-repository
+    useFlux: false                     # Phase 0b: migrate off Flux
+  clusterSpec:
+    image:
+      repository: docker.redpanda.com/redpandadata/redpanda
+      tag: v25.1.9                     # broker version — bumps in Phase 1, 3, 5
+    statefulset:
+      replicas: 3
+      podDisruptionBudget:
+        maxUnavailable: 1
+      sideCars:
+        controllers:
+          enabled: true
+          createRBAC: true
+    resources:
+      cpu:
+        cores: 2
+      memory:
+        container:
+          max: 8Gi
+    storage:
+      persistentVolume:
+        enabled: true
+        size: 100Gi
+        storageClass: managed-csi-premium
+    auth:
+      sasl:
+        enabled: true
+    tls:
+      enabled: true                     # in-cluster TLS via cert-manager
+    listeners:
+      kafka:
+        port: 9092
+        tls: { enabled: true, requireClientAuth: false }
+      admin:
+        port: 9644
+        tls: { enabled: true }
+      schemaRegistry:
+        enabled: true
+        port: 8081
+        tls: { enabled: true }
+      pandaproxy:
+        # Customer is NOT running HTTP Proxy — leaving disabled side-steps
+        # the Phase 1 HTTP Proxy auth breaking change entirely.
+        enabled: false
+    console:
+      enabled: true
+      # Phase 0b: console v3 schema. With v3, config moved up one level
+      # (was console.console.config.kafka, now console.config.kafka).
+      # See docs/console-v2-to-v3.md for the full table the customer
+      # needs to apply against their existing values.
+      config:
+        kafka:
+          brokers:
+            - rp-0.rp.redpanda.svc.cluster.local:9092
+            - rp-1.rp.redpanda.svc.cluster.local:9092
+            - rp-2.rp.redpanda.svc.cluster.local:9092
+          tls:
+            enabled: true
+          sasl:
+            enabled: true
+            mechanism: SCRAM-SHA-512
+        redpanda:
+          adminApi:
+            urls:
+              - https://rp.redpanda.svc.cluster.local:9644
+            tls:
+              enabled: true
+            authentication:
+              basic:
+                username: kubernetes-controller
+                # Password is wired from the operator-managed secret;
+                # see manifests/console-secrets.yaml for the
+                # SecretKeyRef→env-var binding.
+    # Topic defaults — for the rolling-restart safety story.
+    config:
+      cluster:
+        default_topic_replications: 3
+        default_topic_partitions: 12
+        log_segment_size: 134217728

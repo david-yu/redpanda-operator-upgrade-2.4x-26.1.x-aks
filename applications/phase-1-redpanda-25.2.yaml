@@ -1,0 +1,48 @@
+# Phase 1 — Redpanda broker 25.1.9 → 25.2.x  (chart 25.1.x → 25.2.x)
+#
+# Diff from Phase 0b: the redpanda-cluster Application's targetRevision
+# moves to a git ref where manifests/redpanda-cluster.yaml has
+#   spec.chartRef.chartVersion: "25.2.5"
+#   spec.clusterSpec.image.tag: "v25.2.4"
+# Everything else in the Application body is unchanged.
+#
+# Applying this commit triggers a rolling broker restart (StatefulSet
+# walks ordinals top-down with the operator gating each step on
+# `rpk cluster health Healthy=true`). With pdb.maxUnavailable=1 and
+# replication-factor>=3 on every topic, OMB sees zero produce/consume
+# failures.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda
+  source:
+    repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
+    targetRevision: phase-1                      # tag created when the
+                                                  # phase-1 commit lands
+    path: manifests
+    directory:
+      include: 'redpanda-cluster.yaml'
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: cluster.redpanda.com
+      kind: Redpanda
+      jsonPointers:
+        - /status
+        - /spec/clusterSpec/statefulset/replicas
+    # Phase 0b's Flux-CR ignore block can be removed by Phase 1 — those
+    # CRs should be GC'd by now. If they're still present, finish the GC
+    # before applying this phase.

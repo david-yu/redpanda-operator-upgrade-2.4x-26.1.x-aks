@@ -1,0 +1,35 @@
+# Phase 3 — Redpanda broker 25.2.x → 25.3.x  (chart 25.2.x → 25.3.x)
+#
+# Same shape as Phase 1. The customer's "Iceberg schema + topic
+# retention" breaking change does not apply (no Iceberg topics).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda
+  source:
+    repoURL: https://github.com/david-yu/redpanda-operator-upgrade-2.4x-26.1.x-aks
+    targetRevision: phase-3
+    path: manifests
+    directory:
+      include: 'redpanda-cluster.yaml'
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: cluster.redpanda.com
+      kind: Redpanda
+      jsonPointers:
+        - /status
+        - /spec/clusterSpec/statefulset/replicas

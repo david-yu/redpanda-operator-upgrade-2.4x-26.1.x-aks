@@ -1,0 +1,36 @@
+# OpenMessaging Benchmark workload — 10 MB/s, 16 partitions, 1 KB messages.
+#
+# Sizing rationale:
+#   producerRate   = 10000 msg/s
+#   messageSize    = 1024 B
+#   throughput     = 10000 × 1024 = 10.24 MB/s
+#
+# 16 partitions / 4 producers = 4 partitions/producer; well within a
+# single Kafka producer instance's capability. 4 consumers in 1
+# subscription pull at the same rate.
+name: 10MBps-1KB-16part-upgrade-probe
+
+# Topic shape
+topics: 1
+partitionsPerTopic: 16
+
+messageSize: 1024
+keyDistributor: NO_KEY        # round-robin across partitions
+
+# Producers
+producersPerTopic: 4
+producerRate: 10000           # 10 k msg/s × 1 KB ≈ 10 MB/s
+
+# Consumers
+subscriptionsPerTopic: 1
+consumerPerSubscription: 4
+
+# Run for 4 hours by default — long enough to span the full upgrade.
+# Override via OMB CLI flag if your run is shorter or longer:
+#   --duration 240
+warmupDurationMinutes: 1
+testDurationMinutes: 240
+
+# Instruct OMB to record per-second metrics so a grading script can find
+# any 1-second bucket where produce/consume rate dropped to zero.
+samplePeriodSeconds: 1
