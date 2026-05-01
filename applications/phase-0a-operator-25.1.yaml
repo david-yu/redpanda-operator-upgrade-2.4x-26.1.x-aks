@@ -1,14 +1,18 @@
 # Phase 0a — Operator binary v2.4.x → 25.1.x
 #
-# IMPORTANT: the chart name changes from `redpanda-operator` (the v2.4.x
-# era) to `operator` (25.x onwards). This means ArgoCD treats it as a
-# fresh release. After committing this file:
+# This is a normal `helm upgrade` of the `operator` chart from chart
+# version 2.4.6 → 25.1.x. Chart NAME is unchanged (verified against the
+# `operator/v2.4.6` git tag — chart was already named `operator` at
+# v2.4.6, not `redpanda-operator`). No `--replace` needed.
 #
-#     argocd app sync redpanda-operator --replace
+# Caveat: chart versions < 25.2.3 are not currently published to
+# https://charts.redpanda.com. If your existing Application's targetRevision
+# points at 2.4.6 from that repo, ArgoCD's pre-upgrade fetch will fail.
+# Workaround: pin `targetRevision: 25.2.4` (the earliest publicly
+# available) or reconstruct the chart from git for the duration of the
+# Phase 0a window.
 #
-# is required ONCE so the prior `redpanda-operator` Helm release is
-# uninstalled and the new `operator` release is installed. CRDs survive
-# this delete (they're cluster-scoped). No broker restart.
+# No broker restart in this phase.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -20,12 +24,13 @@ spec:
   project: default
   destination:
     server: https://kubernetes.default.svc
-    namespace: redpanda-operator        # NEW namespace — the v2.4.x release
-                                        # lived in `redpanda-system`. We move
-                                        # to the new convention here. If the
-                                        # customer has a strong reason to
-                                        # keep `redpanda-system`, change this
-                                        # field; the operator works in either.
+    namespace: redpanda-operator        # If the v2.4.6 release was in
+                                        # `redpanda-system` (the convention
+                                        # at the time), KEEP that namespace
+                                        # here so this isn't a fresh install.
+                                        # Migrating namespaces would require a
+                                        # full uninstall/reinstall and is
+                                        # out of scope for this upgrade.
   source:
     repoURL: https://charts.redpanda.com
     chart: operator

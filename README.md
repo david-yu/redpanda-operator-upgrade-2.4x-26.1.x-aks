@@ -41,12 +41,18 @@ The customer's plan is reproduced below with **inline notes** (`📌 NOTE`,
 
 - Redpanda: `25.1.9` ✅
 - Operator binary: `v2.4.x` ✅ (assuming `v2.4.6`, the latest in that line)
-- Operator chart: `2.4.x` 📌 NOTE — the v2.4.x **operator binary** ships
-  with the `redpanda-operator` chart at version `0.4.x` (e.g. `0.4.41`), not
-  `2.4.x`. The customer is likely conflating binary tag and chart tag. This
-  doesn't change the upgrade path; just confirm which exact chart name +
-  version the source ArgoCD Application points at and document it before
-  starting (`helm -n redpanda-system list`).
+- Operator chart: `2.4.x` ✅ — the chart at the v2.4.x tag is named
+  `operator` and pinned at chart version `2.4.6`/`appVersion v2.4.6`
+  (verified against `operator/v2.4.6` git tag). It is the **same chart
+  name** as the 25.x+ release line, so Phase 0a is a normal `helm upgrade`
+  (NOT a chart rename) — earlier drafts of this README incorrectly claimed
+  a rename. **Caveat for the customer's specific setup:** chart versions
+  before `25.2.3` are no longer published to `https://charts.redpanda.com`.
+  If you previously installed `operator-2.4.6` from that repo, the
+  Application's `spec.source.targetRevision: 2.4.6` will fail to fetch
+  during a fresh sync. The chart can be reconstructed from the
+  `operator/v2.4.6` git tag if needed for a re-install (highly unusual —
+  the running release is unaffected).
 - Redpanda chart: `5.10.x` ✅
 - Tiered storage: none ✅
 
@@ -82,9 +88,13 @@ The customer's plan is reproduced below with **inline notes** (`📌 NOTE`,
 ### Deltas I'd recommend on top of the customer's plan
 
 1. **Add a Phase −1 pre-flight** that captures (a) cluster spec + Redpanda CR + Console deployment as a known-good snapshot for rollback, (b) confirms AKS `>=1.32` (required for Phase 5), (c) records broker IDs / disk sizes / partition counts as a "before" baseline.
-2. **Skip operator `25.2.x` is fine** — both `25.1.x` and `25.3.x` operators support clusters running `25.2.x`. The customer's "25.1 → 25.3" jump is supported.
-3. **For Phase 0a, set `spec.chartRef.useFlux: false`** in the same change. Flux is being phased out and the new operator paths assume controller-managed reconcile. If the source cluster is currently Flux-managed, the operator will GC the HelmRelease/HelmRepository CRs in this phase; expect transient noise in ArgoCD and add an `IgnoreDifferences` for those types in the Application manifest until the GC settles.
+
+2. **🚨 Hard prerequisite for Phase 2: `spec.chartRef.useFlux: false` on every Redpanda CR.** This is **not optional** and is the single most important addition to the customer's plan. **Operator 25.2.x removed Flux entirely** ([release notes](https://docs.redpanda.com/25.1/get-started/release-notes/operator/#flux-removed)). The 25.2.x reconciler explicitly skips any `Redpanda` whose `spec.chartRef.useFlux` is `true` (verified in source: `operator/internal/controller/redpanda/redpanda_controller.go` ~line 937 — *"Don't reconcile if UseFlux is true"*), so the CR silently falls out of management after the Phase 2 operator bump. Make the `useFlux: false` flip part of **Phase 0a or Phase 0b** and add a verification gate before Phase 2 (see [`docs/flux-removal.md`](docs/flux-removal.md)). For the customer's actual environment (running operator v2.4.x today, where Flux is the legacy default), this is the migration step the upgrade plan was missing.
+
+3. **Skip operator `25.2.x` is fine** — both `25.1.x` and `25.3.x` operators support clusters running `25.2.x`. The customer's "25.1 → 25.3" jump is supported.
+
 4. **OMB rate of 10 MB/s** is comfortably within the smallest reasonable AKS-hosted Redpanda cluster (3 × Standard_D4s_v3 + premium SSD). Running OMB on a 4 vCPU VM with default driver settings produces ≈100 k msg/s at 1 KB; the workload here caps at 10 k msg/s for headroom.
+
 5. **PDB tightness during Phase 1/3/5**: confirm `clusterSpec.statefulset.podDisruptionBudget.maxUnavailable: 1` and that replicas ≥ 3 with replication-factor ≥ 3 on production topics; otherwise rolling restarts can take a partition offline briefly.
 
 ---

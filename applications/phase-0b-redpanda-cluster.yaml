@@ -1,10 +1,17 @@
-# Phase 0b — Redpanda chart 5.10.x → 25.1.x (Console v2 → v3)
+# Phase 0b — Redpanda chart 5.10.x → 25.1.x (Console v2 → v3, useFlux flip)
 #
-# This is the chart RENAME (5.10 → 25.1) without a broker version bump.
-# The Console v2 → v3 transition happens automatically via the chart's
-# console subchart pin (`>=3.7.0-0`). See ../docs/console-v2-to-v3.md for
-# the schema-migration table the customer needs to apply to their
-# console.config block before this commit lands.
+# Three things change on the Redpanda CR in this commit:
+#
+# 1. spec.chartRef.chartVersion: 5.10.x → 25.1.x  (chart name unchanged)
+# 2. spec.chartRef.useFlux: true → false          (MANDATORY before Phase 2 —
+#                                                  operator 25.2.x silently
+#                                                  drops CRs with useFlux:true.
+#                                                  See ../docs/flux-removal.md)
+# 3. spec.clusterSpec.console.config.*            (Console v2 → v3 schema
+#                                                  flatten — see
+#                                                  ../docs/console-v2-to-v3.md)
+#
+# No broker version bump in this phase.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
