@@ -1,35 +1,17 @@
-# Helm values for the operator chart at version 25.1.x.
+# Helm values for the operator chart at 25.1.x.
 #
-# What's here is the minimum that diverges from chart defaults; everything
-# else is left to the chart so future patch releases can pick up new
-# defaults without an explicit values change.
+# Minimum-overlay style: only fields that differ from chart defaults are
+# pinned here. Default-off knobs like crds.experimental, crds.multicluster,
+# and vectorizedControllers.enabled are intentionally NOT set so the
+# overlay tracks chart defaults if those change in a future patch.
 crds:
   enabled: true              # install stable CRDs via the pre-install Job
-  experimental: false        # NodePool CRD — leave off for this customer
-  multicluster: false        # StretchCluster CRD — leave off
-
-image:
-  pullPolicy: IfNotPresent
-  # tag is implicit (= chart appVersion v25.1.3)
-
-# Manage v2 cluster.redpanda.com CRs (Redpanda, User, Topic, etc.).
-# v1 vectorized.io CRs are explicitly disabled because the customer is
-# not using them.
-vectorizedControllers:
-  enabled: false
+                             # (chart default is false; we want them on)
 
 monitoring:
   enabled: true              # render the ServiceMonitor; assumes
                              # prometheus-operator CRDs are installed.
 
-logLevel: info
-
 resources:
   requests: { cpu: 100m, memory: 128Mi }
   limits:   { cpu: 1,    memory: 512Mi }
-
-# Keep the operator namespaced to redpanda-operator. If the customer
-# strictly needs a single-namespace operator, set:
-#   --namespace=redpanda
-# via additionalArgs and they'll only watch CRs in that namespace.
-additionalArgs: []

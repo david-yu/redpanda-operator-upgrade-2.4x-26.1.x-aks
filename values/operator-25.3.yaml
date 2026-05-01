@@ -1,24 +1,13 @@
 # Helm values for the operator chart at 25.3.x.
-# Diff from 25.1.x: nothing functional for this customer; keep the
-# overlay file separate so each phase commit changes one thing.
+# Same overlay as 25.1.x for this customer — kept in a separate file so
+# the Phase 2 ArgoCD diff stays on one Application change (chart version
+# + values file pointer).
 crds:
   enabled: true
-  experimental: false
-  multicluster: false
-
-image:
-  pullPolicy: IfNotPresent
-
-vectorizedControllers:
-  enabled: false
 
 monitoring:
   enabled: true
 
-logLevel: info
-
 resources:
   requests: { cpu: 100m, memory: 128Mi }
   limits:   { cpu: 1,    memory: 512Mi }
-
-additionalArgs: []
