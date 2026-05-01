@@ -1,0 +1,38 @@
+# The "active" Console Service — what your Ingress / users point at.
+#
+# This Service's selector flips wholesale across the upgrade
+# (docs/console-bluegreen-upgrade.md). Three states:
+#
+#   ─ Pre-upgrade (operator-managed v2):
+#       selector:
+#         app.kubernetes.io/instance: redpanda
+#         app.kubernetes.io/name: console
+#
+#   ─ Phase 0b cutover (standalone v3):
+#       selector:
+#         console-version: v3
+#
+#   ─ Phase 2b cutover (operator-managed v3, the final end-state — what's
+#     committed in this file):
+#       selector:
+#         console-version: managed-v3
+#
+# CRITICAL: apply with `kubectl apply -f` (or ArgoCD sync), NOT
+# `kubectl patch --type=merge`. Strategic merge keeps prior selector
+# keys and orphans the new pod from the Service.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-console-active
+  namespace: redpanda
+  annotations:
+    upgrade.redpanda.com/active: managed-v3
+spec:
+  type: ClusterIP
+  selector:
+    console-version: managed-v3
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

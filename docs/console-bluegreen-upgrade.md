@@ -42,67 +42,12 @@ itself is zero-downtime when done as a wholesale Service-selector swap.
 
 ### Step 1. Deploy standalone v3 alongside the operator-managed v2
 
-```yaml
-# console-v3.yaml — drop into the customer's git repo for ArgoCD sync
-apiVersion: v1
-kind: ConfigMap
-metadata: {name: redpanda-console-v3, namespace: redpanda}
-data:
-  config.yaml: |
-    metricsNamespace: console
-    serveFrontend: true
-    server: { gracefulShutdownTimeout: 30s, listenPort: 8080 }
-    kafka:
-      brokers:
-        - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
-        - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
-        - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
-    schemaRegistry:
-      enabled: true
-      urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081]
-    redpanda:
-      adminApi:
-        enabled: true
-        urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:9644]
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redpanda-console-v3
-  namespace: redpanda
-  labels: {app.kubernetes.io/name: console, console-version: v3}
-spec:
-  replicas: 1                        # bump to 2 in production for HA
-  selector: {matchLabels: {console-version: v3}}
-  template:
-    metadata:
-      labels: {app.kubernetes.io/name: console, console-version: v3}
-    spec:
-      containers:
-        - name: console
-          image: docker.redpanda.com/redpandadata/console:v3.7.0
-          args: [-config.filepath=/etc/console/config.yaml]
-          ports: [{name: http, containerPort: 8080}]
-          volumeMounts: [{name: cfg, mountPath: /etc/console}]
-          readinessProbe:
-            httpGet: {path: /admin/health, port: 8080}
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          livenessProbe:
-            httpGet: {path: /admin/health, port: 8080}
-            initialDelaySeconds: 30
-            periodSeconds: 10
-      volumes:
-        - name: cfg
-          configMap: {name: redpanda-console-v3}
----
-apiVersion: v1
-kind: Service
-metadata: {name: redpanda-console-v3, namespace: redpanda}
-spec:
-  type: ClusterIP
-  selector: {console-version: v3}
-  ports: [{name: http, port: 8080, targetPort: 8080}]
+The full ConfigMap + Deployment + Service stack is checked in at
+[`manifests/console-v3-standalone.yaml`](../manifests/console-v3-standalone.yaml).
+Apply it (or land it in the ArgoCD-watched git path):
+
+```bash
+kubectl apply -f manifests/console-v3-standalone.yaml
 ```
 
 Verify v3 is healthy before proceeding:
@@ -122,28 +67,25 @@ validation: a merge patch left `app.kubernetes.io/instance: redpanda` in
 the selector and the v3 pod (which doesn't have that label) was orphaned
 from the Service for the duration.
 
+The active Service lives at
+[`manifests/console-active-service.yaml`](../manifests/console-active-service.yaml).
+The committed file is the **final** Phase-2b state
+(`selector: { console-version: managed-v3 }`); for Phase 0b, edit the
+selector to `console-version: v3` (the file's header comment shows
+all three states explicitly):
+
 ```yaml
-# active-service.yaml — flip this block in git
-apiVersion: v1
-kind: Service
-metadata:
-  name: redpanda-console-active
-  namespace: redpanda
-  annotations:
-    upgrade.redpanda.com/active: v3                   # before: v2
+# manifests/console-active-service.yaml — Phase 0b state
 spec:
-  type: ClusterIP
   selector:
-    console-version: v3                                # before:
-                                                       #   app.kubernetes.io/instance: redpanda
-                                                       #   app.kubernetes.io/name: console
-  ports: [{name: http, port: 8080, targetPort: 8080}]
+    console-version: v3                  # Phase 0b: standalone v3
+  # ...
 ```
 
 Apply with `kubectl apply` (replaces full spec, not merge):
 
 ```bash
-kubectl apply -f active-service.yaml
+kubectl apply -f manifests/console-active-service.yaml
 ```
 
 Endpoint slice typically refreshes in **< 2 seconds**. Validation timing
@@ -236,41 +178,15 @@ Service-selector pattern applies — flip the active Service from the
 standalone v3 to the operator-managed v3, then delete the standalone
 manifests.
 
-```yaml
-# manifests/console-cr.yaml — drop into git, ArgoCD applies it
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Console
-metadata:
-  name: redpanda-console
-  namespace: redpanda
-spec:
-  cluster:
-    clusterRef:
-      name: redpanda                       # Redpanda CR's name
-  replicaCount: 1
-  podLabels:
-    console-version: managed-v3            # used by the active Service
-  service:
-    type: ClusterIP
-    targetPort: 8080
-  # ConsoleValues is "PartialValues" of the upstream console chart, so
-  # any field not set falls through to the chart's defaults. The most
-  # commonly customised piece is config (the equivalent of console.yaml).
-  # See operator/api/redpanda/v1alpha2/console_types.go for the full schema.
-  config:
-    kafka:
-      brokers:
-        - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
-        - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
-        - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
-    schemaRegistry:
-      enabled: true
-      urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081]
-    redpanda:
-      adminApi:
-        enabled: true
-        urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:9644]
-```
+The Console CR is checked in at
+[`manifests/console-cr.yaml`](../manifests/console-cr.yaml). It uses
+`podLabels: { console-version: managed-v3 }` so the active Service
+can target it with the same selector flip as before.
+
+`spec` is a `ConsoleValues` (PartialValues of the upstream console
+chart) — anything not set falls through to chart defaults. See
+`operator/api/redpanda/v1alpha2/console_types.go` for the canonical
+schema.
 
 **Cutover steps** (same probe-protected wholesale-replace as Step 2):
 
@@ -281,21 +197,11 @@ kubectl -n redpanda wait --for=condition=Ready --timeout=2m \
   pod -l console-version=managed-v3
 
 # 2. Flip the active Service selector — wholesale apply, NOT merge.
-kubectl apply -f - <<'YAML'
-apiVersion: v1
-kind: Service
-metadata:
-  name: redpanda-console-active
-  namespace: redpanda
-  annotations: { upgrade.redpanda.com/active: managed-v3 }
-spec:
-  type: ClusterIP
-  selector: { console-version: managed-v3 }
-  ports: [{ name: http, port: 8080, targetPort: 8080 }]
-YAML
+#    The committed manifest already has the managed-v3 selector.
+kubectl apply -f manifests/console-active-service.yaml
 
 # 3. Verify probe is clean, then delete the standalone v3 manifests.
-kubectl delete deploy redpanda-console-v3 svc redpanda-console-v3 cm redpanda-console-v3
+kubectl delete -f manifests/console-v3-standalone.yaml
 ```
 
 **Operator-managed advantages once flipped:**

@@ -254,17 +254,23 @@ ingress / clients point at, then disable the operator's Console.
    └──────────────────────────────────────────────────────────────┘
 ```
 
-**Steps in this phase's git commit (all land together in one push):**
+**Steps in this phase's git commit (all land together in one push).**
+Walk through [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
+Steps 1–3 for the full validated procedure; the manifests this phase
+adds are checked in:
 
-1. **Add v3 manifests** — a standalone `Deployment` + `ConfigMap` +
-   `Service` for Console v3. See
-   [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
-   for the validated YAML; the only customisation needed is the v3
-   `config.yaml` (kafka brokers, schema registry, admin API URLs).
-2. **Add the `redpanda-console-active` Service** with selector
-   `{ console-version: v3 }` — this is what ingress / app clients use as
-   the Console hostname target. The selector replaces wholesale (no
-   `kubectl patch --type=merge`).
+1. **Add v3 manifests** —
+   [`manifests/console-v3-standalone.yaml`](manifests/console-v3-standalone.yaml)
+   (ConfigMap + Deployment + Service for the standalone v3). Adjust
+   the embedded `config.yaml` if your customer's Kafka /
+   Schema-Registry / Admin-API URLs differ from the validated default.
+2. **Add the `redpanda-console-active` Service** —
+   [`manifests/console-active-service.yaml`](manifests/console-active-service.yaml).
+   The committed file has the **final** Phase-2b state
+   (`selector: console-version: managed-v3`); for Phase 0b, edit the
+   selector to `console-version: v3` and apply (`kubectl apply -f` —
+   never `kubectl patch --type=merge`, which leaves prior selector
+   keys behind).
 3. **Update the Redpanda CR** to (a) drop `chartRef.chartVersion`, (b)
    keep `useFlux: false`, (c) set `console.enabled: false`.
 
@@ -388,35 +394,23 @@ just in reverse:
    └──────────────────────────────────────────────────────────────┘
 ```
 
-**Console CR template** (drop into `manifests/` on the customer's
-ArgoCD-watched branch):
+**Follow [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
+Step 5** for the full Phase 2b walkthrough — manifests, cutover order,
+probe-protected verification.
 
-```yaml
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Console
-metadata:
-  name: redpanda-console
-  namespace: redpanda
-spec:
-  cluster:
-    clusterRef:
-      name: redpanda                       # the Redpanda CR's name
-  # Inline ConsoleValues — same shape as the chart's `console:` values block.
-  # Only override what diverges from the chart defaults.
-  replicaCount: 1
-  podLabels:
-    console-version: managed-v3            # so the active Service can target it
-  service:
-    type: ClusterIP
-    targetPort: 8080
-```
+The three manifests Phase 2b touches are all checked in:
 
-The operator's Console controller renders this into a Deployment +
-ConfigMap + Service named `redpanda-console`. After it's Ready, swap the
-active Service selector wholesale (`kubectl apply`, **not**
-`--type=merge`) from `console-version: v3` to
-`console-version: managed-v3`, then delete the standalone manifests.
-Validated probe behavior in
+| File | What it does |
+| ---- | ------------ |
+| [`manifests/console-cr.yaml`](manifests/console-cr.yaml) | the operator-managed Console (`spec.podLabels.console-version: managed-v3`) |
+| [`manifests/console-active-service.yaml`](manifests/console-active-service.yaml) | the Service users / Ingress hit; selector flips wholesale from `console-version: v3` (Phase 0b) → `console-version: managed-v3` (Phase 2b) |
+| [`manifests/console-v3-standalone.yaml`](manifests/console-v3-standalone.yaml) | the standalone v3 Deployment + ConfigMap + Service from Phase 0b — deleted in Phase 2b |
+
+The operator's Console controller renders the CR into a Deployment +
+ConfigMap + Service named `redpanda-console`. After it's Ready, apply
+the updated `console-active-service.yaml` (the committed file already
+has `console-version: managed-v3`), then `kubectl delete -f
+manifests/console-v3-standalone.yaml`. Validated probe behavior in
 [`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md)
 applies identically here — the Service-selector flip is ~2 s, no
 dropped requests when both backends are Ready.

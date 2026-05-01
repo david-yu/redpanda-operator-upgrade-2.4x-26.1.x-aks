@@ -1,0 +1,43 @@
+# Console CR — operator-managed Console v3 (the upgrade's end-state).
+#
+# Applied at Phase 2b
+# (docs/console-bluegreen-upgrade.md, Step 5), after the operator is
+# on 25.2+ and the Console CRD is installed by the chart's pre-install
+# Job. Once this CR is reconciled, flip
+# manifests/console-active-service.yaml to
+# `selector: { console-version: managed-v3 }` and delete the
+# manifests/console-v3-standalone.yaml resources.
+#
+# `spec` is a `ConsoleValues` (PartialValues of the upstream console
+# chart). Anything not set falls through to chart defaults; see
+# operator/api/redpanda/v1alpha2/console_types.go for the canonical
+# schema.
+
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Console
+metadata:
+  name: redpanda-console
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda
+  replicaCount: 1
+  podLabels:
+    console-version: managed-v3
+  service:
+    type: ClusterIP
+    targetPort: 8080
+  config:
+    kafka:
+      brokers:
+        - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
+    schemaRegistry:
+      enabled: true
+      urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081]
+    redpanda:
+      adminApi:
+        enabled: true
+        urls: [http://redpanda-0.redpanda.redpanda.svc.cluster.local:9644]
