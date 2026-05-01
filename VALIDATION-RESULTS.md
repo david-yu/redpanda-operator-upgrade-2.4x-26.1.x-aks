@@ -62,26 +62,50 @@ with `useFlux: true` without raising an error event.
 In this validation we set `useFlux: false` from the start of Phase 0b (and
 went chart-fluxless from operator v2.4.6 onward). Worked clean.
 
-### 3. Console v2 → v3 needs a clean values replacement, not a patch
+### 3. Console v2 → v3: operator can't roll it; use blue/green instead
 
-In the validation env I patched the CR incrementally
-(`kubectl patch ... --type=merge`) to delete the v2 `console.console` block
-and set the v3 `console.config` block. The operator reconciled with no
-errors but the running Console pod kept its v2.8.0 image — even after I
-deleted the Deployment to force a re-render.
+I claimed in an earlier draft that "ArgoCD wholesale replace doesn't
+have this issue." That was wrong — verified with a follow-up focused
+test on a fresh AKS (2026-05-01).
 
-The most likely cause is that the chart values resolution under the
-operator merges the inline subchart values with the prior generation,
-keeping the v2 image tag if it was ever explicitly set. **In ArgoCD,
-where the customer replaces the values block wholesale on each commit,
-this won't reproduce** — that's the right pattern. The validation
-deviated from the customer's actual flow here.
+**Sub-tests, all on a single CR with Console v2.8.0 explicitly pinned,
+operator already upgraded to v25.1.3:**
 
-For this run I disabled Console (`console.enabled: false`) after Phase 0b
-to keep the rest of the upgrade focused; the final cluster does not have
-a Console pod. The Console v2→v3 schema migration table in
-[`docs/console-v2-to-v3.md`](docs/console-v2-to-v3.md) is unchanged and
-still correct for the customer.
+| # | Action | Result |
+| - | ------ | :----: |
+| A | Drop only `chartRef.chartVersion` (keep explicit `console.image.tag`) | Console stays v2.8.0 (expected) |
+| B | Also drop the explicit `console.image` block (the "wholesale replace" claim) | **Console stays v2.8.0** — claim was wrong |
+| C | Delete the `redpanda-console` Deployment to force re-render | Operator recreates at v2.8.0 again |
+| D | Bump a reconcile annotation on the Redpanda CR | No change |
+
+The operator's reconcile path keeps re-applying the v2.8.0 image from a
+cached Helm release values block. Helm-template static analysis confirms
+the chart's *default* Console image at chart 25.1.x is v3.1.0 — but the
+operator never gets there from a CR that had v2.x state.
+
+**Working pattern (validated in same run, 2026-05-01):** treat Console
+v2 → v3 as a parallel deployment + Service-selector cutover, not as
+operator-managed. Step-by-step in
+[`docs/console-bluegreen-upgrade.md`](docs/console-bluegreen-upgrade.md).
+Validation timing:
+
+```
+T_CUTOVER:        17:35:31.3Z   (kubectl apply on the active Service)
+T_APPLIED:        17:35:32.3Z
+T_ENDPOINT_FLIP:  17:35:33.3Z   (~2 s end-to-end)
+Probe (4 Hz against active Service):
+  pre-cutover:   100 OK / 0 fail
+  post-cutover:  450 OK / 0 fail (probe ran 5 more min, then v2 was disabled)
+```
+
+**Zero failed probes across the entire window** including the cutover
+itself. Once the cutover is confirmed, disable the chart's Console
+subchart (`console.enabled: false`) and the operator garbage-collects v2.
+
+**One trap worth a callout in the runbook:** `kubectl patch --type=merge`
+on the active Service's `spec.selector` keeps prior keys; the v3 pod
+(which doesn't have those keys) ends up orphaned. Use `kubectl apply`
+(wholesale replace) or ArgoCD's normal sync, not merge.
 
 ## Two operational notes (validation deviations — not findings)
 
