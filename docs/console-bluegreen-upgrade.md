@@ -198,17 +198,25 @@ in a follow-up commit. ArgoCD will create the new resources and prune the
 `-v3` ones. The active Service selector flips one more time (4 → final).
 This is cosmetic; you can also keep `-v3` indefinitely.
 
-### Step 5. (Optional, requires operator 26.1+) Bring Console back under operator management
+### Step 5. (Required end-state, operator 26.1+) Bring Console back under operator management
 
 The blue/green cutover deliberately moves Console **out** of operator
-management for the upgrade window. After Phase 5 (operator on 26.1.x),
-the customer can opt back in by applying a **`Console` CRD** — the
-operator-native way to declare a Console instance separately from the
-Redpanda CR. This is a separate top-level resource
-(`cluster.redpanda.com/v1alpha2`, `kind: Console`), in the `stableCRDs`
-list installed by the chart's pre-install Job whenever
-`crds.enabled: true`. The `ConsoleReconciler` is on by default
-(operator flag `--enable-console=true`).
+management for the upgrade window. **The required end-state, once
+operator 26.1+ is in place, is to put Console back under operator
+management** by applying a `Console` CR — the operator-native way to
+declare a Console instance separately from the Redpanda CR. This is a
+separate top-level resource (`cluster.redpanda.com/v1alpha2`,
+`kind: Console`), in the `stableCRDs` list installed by the chart's
+pre-install Job whenever `crds.enabled: true`. The `ConsoleReconciler`
+is on by default (operator flag `--enable-console=true`).
+
+**Why this is part of the upgrade, not an optional polish step:** the
+Redpanda chart's bundled `console:` subchart is legacy. Going forward,
+Console is a separate top-level CR. Operator chart bumps in the 26.x →
+27.x line will assume Console is expressed via the CRD; leaving Console
+as a hand-rolled standalone Deployment means every future operator
+bump requires a separate manual step to keep Console image versions
+current.
 
 **Why this is itself a blue/green:** the Console CR's reconciler creates
 its own Deployment (named `redpanda-console`). It does **not** adopt the
@@ -287,15 +295,21 @@ kubectl delete deploy redpanda-console-v3 svc redpanda-console-v3 cm redpanda-co
 - Single ArgoCD Application for the Redpanda CR + Console CR; no
   separate "standalone Console" tree to maintain.
 
-**Risks / when not to do this:**
-- Phase 5 just exited. Adding another rolling-deploy step in the same
-  change window adds noise. Many teams keep the standalone deployment
-  for at least a soak period.
-- The Console CR's schema is `ConsoleValues` (PartialValues), not the
-  raw chart values block. Some less-common knobs may not be expressible
-  yet — check `operator/api/redpanda/v1alpha2/console_types.go` for the
-  full struct before relying on a specific field. A workaround is to
-  stay on the standalone Deployment until the field is added.
+**Operational notes:**
+- Land all of Step 5's manifests (Console CR + active-Service flip +
+  removal of the standalone Deployment / ConfigMap / Service) in the
+  **same git commit**. Splitting them lets ArgoCD and the operator
+  briefly fight over Deployment ownership.
+- A short soak between Phase 5 and Step 5 is fine if the customer wants
+  to observe a steady state, but Step 5 is part of the upgrade — not a
+  follow-up to be skipped indefinitely.
+- The Console CR's schema is `ConsoleValues` (PartialValues of the
+  upstream chart). Common knobs (`replicaCount`, `image`, `service`,
+  `ingress`, `config`, `resources`, ...) are exposed; very niche values
+  may not be expressible yet — see
+  `operator/api/redpanda/v1alpha2/console_types.go` for the canonical
+  struct, and file an upstream issue if your customer needs a missing
+  field.
 
 ## What this pattern relies on
 

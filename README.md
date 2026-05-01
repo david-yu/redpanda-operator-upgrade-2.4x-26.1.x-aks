@@ -73,12 +73,15 @@ The customer's plan is reproduced below with **inline notes** (`📌 NOTE`,
 | 3     | Redpanda broker `25.2.x → 25.3.x` (chart bump implicit) | yes (rolling) | 0 errors |
 | 4     | Operator binary + chart `25.3.x → 26.1.x` | no | 0 errors |
 | 5     | Redpanda broker `25.3.x → 26.1.x` (chart bump implicit). AKS K8s ≥ 1.32 required. | yes (rolling) | 0 errors |
+| 6     | Bring Console v3 back under operator management via the new `cluster.redpanda.com/v1alpha2 Console` CRD. **Required end-state** so future operator bumps continue to manage Console (chart-bundled Console subchart is being deprecated; the Console CRD is the supported path going forward). | no (Console-only flip ~2 s) | 0 errors |
 
 **Total validated upgrade window** (Run 3, 3-broker AKS cluster on
 Standard_D4s_v3): ~20 minutes wall clock for source state → terminal
-state, with `kafka-probe` recording **158,000 produces / 0 errors** and
-`console-probe` recording **4,700 HTTP 200 / 0 failures** across the
-entire run.
+state through Phase 5, with `kafka-probe` recording **158,000 produces /
+0 errors** and `console-probe` recording **4,700 HTTP 200 / 0 failures**
+across the entire run. Phase 6 adds another ~30 s for the Console
+managed-Deployment to come up + the Service-selector flip; uses the
+same probe machinery.
 
 ### Customer's open questions
 
@@ -357,22 +360,27 @@ multicluster CRDs your topology uses.
 **Final rolling restart.** AKS K8s version must be `>=1.32` before
 applying this phase (verified in Phase −1 pre-flight).
 
-### Phase 6 (optional) — bring Console v3 back under operator management via the v2 `Console` CRD
+### Phase 6 — bring Console v3 back under operator management via the new `Console` CRD
 
-After Phase 5 finishes, the customer is fully on operator 26.1.x and
-broker v26.1.6, but **Console is still the standalone Deployment**
-deployed in Phase 0b's blue/green cutover. That's a perfectly valid
-end-state — Console is stateless, its config lives in a ConfigMap that
-ArgoCD owns, and there's no cluster-functional reason to put it back
-under the operator.
+After Phase 5 the customer is fully on operator 26.1.x and broker
+v26.1.6, but Console is still the standalone Deployment deployed in
+Phase 0b's blue/green cutover. **Phase 6 moves it back under operator
+management** by adopting the new `cluster.redpanda.com/v1alpha2 Console`
+CRD that operator 26.1+ ships as the supported way to express a Console
+instance.
 
-If the customer prefers operator-managed Console for the long term —
-unified declarative config, automatic chart upgrades on each operator
-bump, status visibility via `kubectl get console` — operator 26.1+ ships
-a separate **`Console` CRD** (`cluster.redpanda.com/v1alpha2`,
-`stableCRDs` in the chart's pre-install Job) and a `ConsoleReconciler`
-that's enabled by default (`--enable-console=true`). A `Console` CR is
-the operator-native way to express the same v3 deployment.
+This phase is part of the upgrade — not an optional follow-up — because:
+
+- The Redpanda chart's bundled `console:` subchart is the legacy
+  mechanism. Going forward, Console is a separate top-level resource
+  managed by the operator's `ConsoleReconciler` (enabled by default
+  via `--enable-console=true`).
+- Operator chart bumps (the next 26.x → 27.x line, etc.) will assume
+  Console is a `Console` CR. Leaving Console as a hand-rolled standalone
+  Deployment means every future operator bump requires a separate
+  manual step to keep Console image versions current.
+- Declarative parity with the rest of the cluster (`kubectl get console`
+  alongside `kubectl get redpanda`).
 
 **The flip is itself a blue/green cutover** — same pattern as Phase 0b,
 just in reverse:
@@ -429,17 +437,33 @@ applies identically here — the Service-selector flip is ~2 s, no
 dropped requests when both backends are Ready.
 
 **Notes:**
-- The `Console` CRD is **not** required to use Console — many customers
-  stay on the standalone Deployment indefinitely. Run 3 left it that
-  way and that's a fully supported terminal state.
-- If the customer takes this step, they should also remove the
-  standalone v3 manifests from git in the same commit so ArgoCD prunes
-  them rather than fighting the operator over Deployment ownership.
+- Remove the standalone v3 manifests (`Deployment`,
+  `ConfigMap`, plain `Service`) from git in the **same commit** that
+  adds the Console CR + the active-Service selector flip. ArgoCD prunes
+  them as part of the sync; if you split the commits, ArgoCD and the
+  operator briefly fight over Deployment ownership.
 - The Console CR's `spec.cluster.clusterRef.name` is the simplest way to
   point Console at the cluster — the operator resolves brokers, schema
   registry, and admin API URLs from the Redpanda CR's own status. For
   per-listener overrides see the `staticConfiguration` mode in
   `ClusterSource`.
+- The `Console` CR's `spec` embeds `ConsoleValues`, which is a
+  `PartialValues` of the upstream console chart (see
+  `operator/api/redpanda/v1alpha2/console_types.go`). Common fields
+  (`replicaCount`, `image`, `service`, `ingress`, `config`, `resources`,
+  etc.) are exposed; very-niche values may not be expressible yet —
+  open an issue against the operator if you hit one.
+
+**Exit criteria:**
+- `kubectl -n redpanda get console redpanda-console -o jsonpath='{.status.readyReplicas}/{.status.replicas}'`
+  → `1/1` (or however many replicas you set).
+- `kubectl -n redpanda get pods -l console-version=managed-v3` → 1 pod
+  Running, image `console:v3.7.x`.
+- `kubectl -n redpanda get svc redpanda-console-active -o jsonpath='{.spec.selector}'`
+  → `{ console-version: managed-v3 }`.
+- Standalone v3 resources pruned: no `redpanda-console-v3` Deployment,
+  Service, or ConfigMap in the namespace.
+- Continuous probe shows zero failures across the cutover.
 
 ---
 
