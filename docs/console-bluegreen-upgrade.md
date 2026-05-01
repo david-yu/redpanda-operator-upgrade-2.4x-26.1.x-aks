@@ -198,17 +198,28 @@ in a follow-up commit. ArgoCD will create the new resources and prune the
 `-v3` ones. The active Service selector flips one more time (4 → final).
 This is cosmetic; you can also keep `-v3` indefinitely.
 
-### Step 5. (Required end-state, operator 26.1+) Bring Console back under operator management
+### Step 5. (Required, operator 25.2+) Bring Console back under operator management
 
 The blue/green cutover deliberately moves Console **out** of operator
 management for the upgrade window. **The required end-state, once
-operator 26.1+ is in place, is to put Console back under operator
+operator 25.2+ is in place, is to put Console back under operator
 management** by applying a `Console` CR — the operator-native way to
-declare a Console instance separately from the Redpanda CR. This is a
-separate top-level resource (`cluster.redpanda.com/v1alpha2`,
-`kind: Console`), in the `stableCRDs` list installed by the chart's
-pre-install Job whenever `crds.enabled: true`. The `ConsoleReconciler`
-is on by default (operator flag `--enable-console=true`).
+declare a Console instance separately from the Redpanda CR.
+
+The `Console` CRD is `cluster.redpanda.com/v1alpha2`, `kind: Console`.
+It [shipped in operator 25.2.x](https://docs.redpanda.com/25.2/get-started/release-notes/operator/)
+and is in the `stableCRDs` list installed by the chart's pre-install
+Job whenever `crds.enabled: true` (verified in `operator/v25.2.4`
+source). The `ConsoleReconciler` is on by default (operator flag
+`--enable-console=true`).
+
+**Timing:** in this customer's upgrade plan, Phase 2 lands the operator
+on 25.3.4 (the customer skips the 25.2.x binary). The Console CRD is
+installed by Phase 2's chart pre-install Job, so this step slots in as
+"Phase 2b" — right after Phase 2, before Phase 3's broker rolling
+restart. Doing it then (rather than after Phase 5) means the broker
+restarts in Phases 3 and 5 happen with Console already in its final
+CR-managed steady state.
 
 **Why this is part of the upgrade, not an optional polish step:** the
 Redpanda chart's bundled `console:` subchart is legacy. Going forward,

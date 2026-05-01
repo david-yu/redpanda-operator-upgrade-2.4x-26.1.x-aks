@@ -73,13 +73,18 @@ The customer's plan is reproduced below with **inline notes** (`📌 NOTE`,
 | 3     | Redpanda broker `25.2.x → 25.3.x` (chart bump implicit) | yes (rolling) | 0 errors |
 | 4     | Operator binary + chart `25.3.x → 26.1.x` | no | 0 errors |
 | 5     | Redpanda broker `25.3.x → 26.1.x` (chart bump implicit). AKS K8s ≥ 1.32 required. | yes (rolling) | 0 errors |
-| 6     | Bring Console v3 back under operator management via the new `cluster.redpanda.com/v1alpha2 Console` CRD. **Required end-state** so future operator bumps continue to manage Console (chart-bundled Console subchart is being deprecated; the Console CRD is the supported path going forward). | no (Console-only flip ~2 s) | 0 errors |
+
+**Required follow-up step (slots in right after Phase 2):**
+
+| Phase | What changes | Broker restart? | Validated downtime (Run 3) |
+| ----- | ------------ | :-------------: | :-----------------------: |
+| **2b**    | Bring Console v3 back under operator management via the new `cluster.redpanda.com/v1alpha2 Console` CRD. The CRD ships in operator **25.2+** (verified in `operator/v25.2.4` source — `crds.Console()` is in `stableCRDs`); since Phase 2 lands the operator on 25.3.x, the CRD is available immediately afterwards. **Required end-state** so future operator bumps continue to manage Console — the Redpanda chart's bundled `console:` subchart is the legacy mechanism. | no (Console-only flip ~2 s) | 0 errors |
 
 **Total validated upgrade window** (Run 3, 3-broker AKS cluster on
 Standard_D4s_v3): ~20 minutes wall clock for source state → terminal
 state through Phase 5, with `kafka-probe` recording **158,000 produces /
 0 errors** and `console-probe` recording **4,700 HTTP 200 / 0 failures**
-across the entire run. Phase 6 adds another ~30 s for the Console
+across the entire run. Phase 2b adds another ~30 s for the Console
 managed-Deployment to come up + the Service-selector flip; uses the
 same probe machinery.
 
@@ -335,52 +340,28 @@ Same shape as Phase 0a, just bumps `targetRevision` and the values file.
 **Operator skip from 25.1 → 25.3** (skipping 25.2 binary) is supported —
 both 25.1 and 25.3 manage 25.2 brokers. No broker restart.
 
-### Phase 3 — Redpanda broker 25.2.x → 25.3.x
+### Phase 2b — bring Console v3 back under operator management via the new `Console` CRD
 
-**ArgoCD change:** [`applications/phase-3-redpanda-25.3.yaml`](applications/phase-3-redpanda-25.3.yaml).
+After Phase 2, the operator is on **25.3.4** — and the Console CRD
+(`cluster.redpanda.com/v1alpha2`, `kind: Console`) is now installed by
+the chart's pre-install Job. The CRD was [introduced in operator
+25.2.x](https://docs.redpanda.com/25.2/get-started/release-notes/operator/);
+verified against `operator/v25.2.4` source — `crds.Console()` is in the
+`stableCRDs` list.
 
-Mirror of Phase 1. Note the customer's "Iceberg schema + topic retention"
-breaking change is documented but **does not apply** here because the
-customer has no Iceberg topics.
+**Phase 2b moves Console back under operator management** by adopting
+the CRD. This is a **required** part of the upgrade — the Redpanda
+chart's bundled `console:` subchart is the legacy mechanism. Going
+forward:
 
-### Phase 4 — Operator 25.3.x → 26.1.x
-
-**ArgoCD change:** [`applications/phase-4-operator-26.1.yaml`](applications/phase-4-operator-26.1.yaml).
-
-This is the operator's CRD-shape change for the multicluster work; CRDs
-land via the chart's pre-install Job. Verify
-`kubectl get crds | grep redpanda.com` shows all expected types
-including `nodepools.cluster.redpanda.com` (new in 25.3) and any
-multicluster CRDs your topology uses.
-
-### Phase 5 — Redpanda broker 25.3.x → 26.1.x
-
-**ArgoCD change:** [`applications/phase-5-redpanda-26.1.yaml`](applications/phase-5-redpanda-26.1.yaml).
-
-**Final rolling restart.** AKS K8s version must be `>=1.32` before
-applying this phase (verified in Phase −1 pre-flight).
-
-### Phase 6 — bring Console v3 back under operator management via the new `Console` CRD
-
-After Phase 5 the customer is fully on operator 26.1.x and broker
-v26.1.6, but Console is still the standalone Deployment deployed in
-Phase 0b's blue/green cutover. **Phase 6 moves it back under operator
-management** by adopting the new `cluster.redpanda.com/v1alpha2 Console`
-CRD that operator 26.1+ ships as the supported way to express a Console
-instance.
-
-This phase is part of the upgrade — not an optional follow-up — because:
-
-- The Redpanda chart's bundled `console:` subchart is the legacy
-  mechanism. Going forward, Console is a separate top-level resource
-  managed by the operator's `ConsoleReconciler` (enabled by default
-  via `--enable-console=true`).
-- Operator chart bumps (the next 26.x → 27.x line, etc.) will assume
-  Console is a `Console` CR. Leaving Console as a hand-rolled standalone
-  Deployment means every future operator bump requires a separate
-  manual step to keep Console image versions current.
-- Declarative parity with the rest of the cluster (`kubectl get console`
-  alongside `kubectl get redpanda`).
+- Console is a separate top-level resource managed by the operator's
+  `ConsoleReconciler` (enabled by default via `--enable-console=true`).
+- Operator chart bumps in the 26.x → 27.x line will assume Console is a
+  `Console` CR. Leaving Console as a hand-rolled standalone Deployment
+  means every future operator bump requires a separate manual step to
+  keep Console image versions current.
+- Declarative parity with the rest of the cluster: `kubectl get console`
+  alongside `kubectl get redpanda`.
 
 **The flip is itself a blue/green cutover** — same pattern as Phase 0b,
 just in reverse:
@@ -437,11 +418,11 @@ applies identically here — the Service-selector flip is ~2 s, no
 dropped requests when both backends are Ready.
 
 **Notes:**
-- Remove the standalone v3 manifests (`Deployment`,
-  `ConfigMap`, plain `Service`) from git in the **same commit** that
-  adds the Console CR + the active-Service selector flip. ArgoCD prunes
-  them as part of the sync; if you split the commits, ArgoCD and the
-  operator briefly fight over Deployment ownership.
+- Land all Phase 2b manifests in the **same git commit**: Console CR +
+  active-Service selector flip + removal of the standalone v3
+  Deployment / ConfigMap / Service. ArgoCD prunes them as part of the
+  sync; if you split the commits, ArgoCD and the operator briefly fight
+  over Deployment ownership.
 - The Console CR's `spec.cluster.clusterRef.name` is the simplest way to
   point Console at the cluster — the operator resolves brokers, schema
   registry, and admin API URLs from the Redpanda CR's own status. For
@@ -453,6 +434,12 @@ dropped requests when both backends are Ready.
   (`replicaCount`, `image`, `service`, `ingress`, `config`, `resources`,
   etc.) are exposed; very-niche values may not be expressible yet —
   open an issue against the operator if you hit one.
+- Phase 2b runs against brokers on `v25.2.x` (from Phase 1) and operator
+  `25.3.4` (from Phase 2). The cluster has no broker rolling restart
+  pending at this point, so the Console-only cutover happens against a
+  steady cluster. Doing it here rather than after Phase 5 means
+  subsequent broker rolling restarts in Phases 3 and 5 happen with
+  Console already in its CR-managed steady state.
 
 **Exit criteria:**
 - `kubectl -n redpanda get console redpanda-console -o jsonpath='{.status.readyReplicas}/{.status.replicas}'`
@@ -464,6 +451,31 @@ dropped requests when both backends are Ready.
 - Standalone v3 resources pruned: no `redpanda-console-v3` Deployment,
   Service, or ConfigMap in the namespace.
 - Continuous probe shows zero failures across the cutover.
+
+### Phase 3 — Redpanda broker 25.2.x → 25.3.x
+
+**ArgoCD change:** [`applications/phase-3-redpanda-25.3.yaml`](applications/phase-3-redpanda-25.3.yaml).
+
+Mirror of Phase 1. Note the customer's "Iceberg schema + topic retention"
+breaking change is documented but **does not apply** here because the
+customer has no Iceberg topics.
+
+### Phase 4 — Operator 25.3.x → 26.1.x
+
+**ArgoCD change:** [`applications/phase-4-operator-26.1.yaml`](applications/phase-4-operator-26.1.yaml).
+
+This is the operator's CRD-shape change for the multicluster work; CRDs
+land via the chart's pre-install Job. Verify
+`kubectl get crds | grep redpanda.com` shows all expected types
+including `nodepools.cluster.redpanda.com` (new in 25.3) and any
+multicluster CRDs your topology uses.
+
+### Phase 5 — Redpanda broker 25.3.x → 26.1.x
+
+**ArgoCD change:** [`applications/phase-5-redpanda-26.1.yaml`](applications/phase-5-redpanda-26.1.yaml).
+
+**Final rolling restart.** AKS K8s version must be `>=1.32` before
+applying this phase (verified in Phase −1 pre-flight).
 
 ---
 
